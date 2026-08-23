@@ -32,7 +32,6 @@ def load_config():
         try:
             with open(CONFIG_FILE, 'r') as f:
                 data = json.load(f)
-                # التحقق من الصحة
                 if "fg" in data and "bg" in data and len(data["fg"]) == 50 and len(data["bg"]) == 50:
                     return data
         except:
@@ -46,14 +45,11 @@ def save_config(cfg):
 def draw_buttons(stdscr, config, selected_idx, message):
     stdscr.clear()
     height, width = stdscr.getmaxyx()
-    # تقسيم إلى 10 أعمدة و 5 صفوف (50 زر)
     cols = 10
     rows = 5
-    # حجم الزر: عرض 5 خانات (رقم + مسافات)، ارتفاع سطر واحد
-    # نحسب المسافات لتوسيط الكل
-    total_width = cols * 6  # 5 + مسافة فاصلة
+    total_width = cols * 6
     start_x = (width - total_width) // 2
-    start_y = 2  # نترك سطرين للأعلى
+    start_y = 2
 
     for i in range(50):
         row = i // cols
@@ -66,16 +62,12 @@ def draw_buttons(stdscr, config, selected_idx, message):
         bg_name = config["bg"][i]
         fg = COLORS.get(fg_name, curses.COLOR_WHITE)
         bg = COLORS.get(bg_name, curses.COLOR_BLACK)
-        # إنشاء زوج ألوان فريد لكل زر (رقم الزوج = i+1)
         try:
             curses.init_pair(i+1, fg, bg)
         except:
-            # إذا فشل، استخدم الافتراضي
             curses.init_pair(i+1, curses.COLOR_WHITE, curses.COLOR_BLACK)
         color_pair = curses.color_pair(i+1)
-        # رسم الزر
         if i == selected_idx:
-            # تمييز الزر المحدد بـ * قبل وبعده
             label = f"*{i+1:2d}*"
             stdscr.attron(curses.A_REVERSE)
             stdscr.addstr(y, x, label, color_pair)
@@ -84,7 +76,6 @@ def draw_buttons(stdscr, config, selected_idx, message):
             label = f" {i+1:2d} "
             stdscr.addstr(y, x, label, color_pair)
 
-    # عرض التعليمات
     help_text = f"←↑↓→ تحريك | (f) تغيير الأمامية | (b) تغيير الخلفية | (s) حفظ | (q) خروج | {message}"
     if len(help_text) < width:
         stdscr.addstr(height-2, (width-len(help_text))//2, help_text)
@@ -93,11 +84,17 @@ def draw_buttons(stdscr, config, selected_idx, message):
     stdscr.refresh()
 
 def main(stdscr):
-    curses.curs_set(0)  # إخفاء المؤشر
+    curses.curs_set(0)
     curses.start_color()
-    # تأكد من وجود الألوان الأساسية
     curses.use_default_colors()
-    # تحميل الإعدادات
+    
+    # التحقق من دعم الألوان بعد تهيئة curses
+    if not curses.has_colors():
+        stdscr.addstr(0, 0, "خطأ: المحطة لا تدعم الألوان.")
+        stdscr.refresh()
+        stdscr.getch()
+        return
+
     config = load_config()
     selected = 0
     message = ""
@@ -124,14 +121,12 @@ def main(stdscr):
             if selected % 10 < 9:
                 selected += 1
         elif key == ord('f') or key == ord('F'):
-            # تغيير لون الأمامية للزر المحدد
             current = config["fg"][selected]
             idx = COLOR_NAMES.index(current) if current in COLOR_NAMES else 0
             new_idx = (idx + 1) % len(COLOR_NAMES)
             config["fg"][selected] = COLOR_NAMES[new_idx]
             message = f"الزر {selected+1} -> أمامية: {COLOR_NAMES[new_idx]}"
         elif key == ord('b') or key == ord('B'):
-            # تغيير لون الخلفية للزر المحدد
             current = config["bg"][selected]
             idx = COLOR_NAMES.index(current) if current in COLOR_NAMES else 0
             new_idx = (idx + 1) % len(COLOR_NAMES)
@@ -140,14 +135,11 @@ def main(stdscr):
         else:
             message = f"ضغطت: {key} (غير معروف)"
 
-    save_config(config)  # حفظ تلقائي عند الخروج
+    save_config(config)
     stdscr.clear()
     stdscr.addstr(0, 0, "تم الخروج، الإعدادات محفوظة.")
     stdscr.refresh()
     stdscr.getch()
 
 if __name__ == "__main__":
-    if not curses.has_colors():
-        print("خطأ: المحطة لا تدعم الألوان.")
-        sys.exit(1)
     curses.wrapper(main)
